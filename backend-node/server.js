@@ -4,61 +4,120 @@ const multer = require('multer');
 const pdf = require('pdf-parse');
 const axios = require('axios');
 const admin = require('firebase-admin');
+const fs = require('fs');
+const path = require('path');
 require('dotenv').config();
 
 const app = express();
-app.use(cors());
-app.use(express.json({ limit: '50mb' }));
-
-// Initialize Firebase Admin
-const serviceAccount = require('./ai-resume-analyzer-22955-firebase-adminsdk-fbsvc-4359f2a406.json');
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
-
-const db = admin.firestore?.() || null;
 const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:8000';
+const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
-const upload = multer({ 
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  next();
+});
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error('Origin not allowed by CORS'));
+  },
+  credentials: true,
+}));
+app.use(express.json({ limit: '1mb' }));
+
+function getFirebaseCredential() {
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    return JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+  }
+
+  if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
+    return {
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    };
+  }
+
+  const localServiceAccount = path.join(__dirname, 'ai-resume-analyzer-22955-firebase-adminsdk-fbsvc-4359f2a406.json');
+  if (fs.existsSync(localServiceAccount)) {
+    return require(localServiceAccount);
+  }
+
+  return null;
+}
+
+const firebaseCredential = getFirebaseCredential();
+if (firebaseCredential && !admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert(firebaseCredential),
+  });
+} else if (!firebaseCredential) {
+  console.warn('[SERVER] Firebase Admin credentials are not configured.');
+}
+
+const db = firebaseCredential ? admin.firestore() : null;
+
+const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype !== 'application/pdf') {
+      return cb(new Error('Only PDF uploads are supported'));
+    }
+    cb(null, true);
+  },
 });
 
-console.log(`[SERVER] Connecting to AI Service at: ${AI_SERVICE_URL}`);
-
-// ============================================
-// ERROR HANDLING MIDDLEWARE
-// ============================================
 const asyncHandler = (fn) => (req, res, next) => {
   Promise.resolve(fn(req, res, next)).catch(next);
 };
 
-app.use((err, req, res, next) => {
-  console.error('[ERROR]', err);
-  res.status(500).json({ 
-    error: err.message || 'Internal Server Error',
-    details: process.env.NODE_ENV === 'development' ? err.stack : undefined
-  });
-});
+const rateLimitStore = new Map();
+const rateLimit = ({ windowMs = 60_000, max = 60 } = {}) => (req, res, next) => {
+  const key = req.ip || req.headers['x-forwarded-for'] || 'unknown';
+  const now = Date.now();
+  const entry = rateLimitStore.get(key) || { count: 0, resetAt: now + windowMs };
 
-// ============================================
-// UTILITY FUNCTIONS
-// ============================================
+  if (entry.resetAt <= now) {
+    entry.count = 0;
+    entry.resetAt = now + windowMs;
+  }
+
+  entry.count += 1;
+  rateLimitStore.set(key, entry);
+
+  if (entry.count > max) {
+    return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+  }
+
+  next();
+};
+
+app.use('/api', rateLimit({ max: Number(process.env.RATE_LIMIT_PER_MINUTE || 60) }));
 
 async function extractPdfText(buffer) {
   try {
     const data = await pdf(buffer);
     return data.text;
   } catch (e) {
-    console.error("PDF EXTRACTION ERROR:", e.message);
-    throw new Error(`Failed to extract PDF text: ${e.message}`);
+    console.error('[PDF EXTRACTION ERROR]', e.message);
+    throw new Error('Failed to extract PDF text');
   }
 }
 
 async function callAIService(endpoint, data) {
   try {
     const response = await axios.post(`${AI_SERVICE_URL}${endpoint}`, data, {
-      timeout: 30000
+      timeout: Number(process.env.AI_SERVICE_TIMEOUT_MS || 30000),
     });
     return response.data;
   } catch (error) {
@@ -68,261 +127,308 @@ async function callAIService(endpoint, data) {
   }
 }
 
-// ============================================
-// ENDPOINTS
-// ============================================
-
-// 1. Resume Upload & Analysis
-app.post('/api/analyze-resume', upload.single('resume'), asyncHandler(async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: "No file uploaded" });
+function requireFirestore() {
+  if (!db) {
+    throw new Error('Firebase Admin is not configured');
   }
+}
 
-  console.log(`[RESUME ANALYSIS] File size: ${req.file.size} bytes`);
+function getBearerToken(req) {
+  const authHeader = req.headers.authorization || '';
+  return authHeader.startsWith('Bearer ') ? authHeader.slice('Bearer '.length) : null;
+}
+
+async function requireAuth(req, res, next) {
+  try {
+    if (!firebaseCredential) {
+      return res.status(503).json({ error: 'Authentication service is not configured' });
+    }
+
+    const token = getBearerToken(req);
+    if (!token) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    req.user = await admin.auth().verifyIdToken(token);
+    next();
+  } catch (err) {
+    console.error('[AUTH ERROR]', err.message);
+    res.status(401).json({ error: 'Invalid or expired authentication token' });
+  }
+}
+
+function validateText(value, field, { min = 1, max = 20000 } = {}) {
+  if (typeof value !== 'string') {
+    throw new Error(`${field} must be a string`);
+  }
+  const trimmed = value.trim();
+  if (trimmed.length < min) {
+    throw new Error(`${field} is too short`);
+  }
+  if (trimmed.length > max) {
+    throw new Error(`${field} is too long`);
+  }
+  return trimmed;
+}
+
+function normalizeMatchScore(value) {
+  const score = Number(value || 0);
+  return Math.max(0, Math.min(100, Number.isFinite(score) ? score : 0));
+}
+
+function timestampMillis(value) {
+  if (!value) {
+    return 0;
+  }
+  if (typeof value.toMillis === 'function') {
+    return value.toMillis();
+  }
+  if (typeof value.seconds === 'number') {
+    return value.seconds * 1000;
+  }
+  return new Date(value).getTime() || 0;
+}
+
+function sortByCreatedAtDesc(items) {
+  return items.sort((a, b) => timestampMillis(b.createdAt) - timestampMillis(a.createdAt));
+}
+
+app.post('/api/analyze-resume', requireAuth, upload.single('resume'), asyncHandler(async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded' });
+  }
 
   const resumeText = await extractPdfText(req.file.buffer);
-  console.log(`[RESUME ANALYSIS] Extracted text: ${resumeText.length} chars`);
+  if (resumeText.trim().length < 50) {
+    return res.status(400).json({ error: 'Resume text is too short' });
+  }
 
   const aiResponse = await callAIService('/analyze-resume', {
-    resume_text: resumeText
+    resume_text: resumeText,
   });
 
   res.json(aiResponse);
 }));
 
-// 2. Job Analysis
-app.post('/api/analyze-job', asyncHandler(async (req, res) => {
-  const { jobDescription } = req.body;
-  
-  if (!jobDescription || jobDescription.trim().length < 50) {
-    return res.status(400).json({ error: "Job description is too short" });
-  }
-
-  console.log(`[JOB ANALYSIS] Description length: ${jobDescription.length} chars`);
+app.post('/api/analyze-job', requireAuth, asyncHandler(async (req, res) => {
+  const jobDescription = validateText(req.body.jobDescription, 'Job description', { min: 50, max: 50000 });
 
   const aiResponse = await callAIService('/analyze-job', {
-    job_description: jobDescription
+    job_description: jobDescription,
   });
 
   res.json(aiResponse);
 }));
 
-// 3. Match Score
-app.post('/api/match-score', upload.single('resume'), asyncHandler(async (req, res) => {
+app.post('/api/match-score', requireAuth, upload.single('resume'), asyncHandler(async (req, res) => {
   if (!req.file) {
-    return res.status(400).json({ error: "No file uploaded" });
+    return res.status(400).json({ error: 'No file uploaded' });
   }
 
-  const { jobDescription } = req.body;
-  
-  if (!jobDescription || jobDescription.trim().length < 50) {
-    return res.status(400).json({ error: "Job description is too short" });
-  }
-
-  console.log(`[MATCH SCORE] Resume size: ${req.file.size}, JD length: ${jobDescription.length}`);
-
+  const jobDescription = validateText(req.body.jobDescription, 'Job description', { min: 50, max: 50000 });
   const resumeText = await extractPdfText(req.file.buffer);
 
   const aiResponse = await callAIService('/match-score', {
     resume_text: resumeText,
-    job_description: jobDescription
+    job_description: jobDescription,
   });
 
   res.json(aiResponse);
 }));
 
-// 4. Generate Cover Letter
-app.post('/api/generate-cover-letter', upload.single('resume'), asyncHandler(async (req, res) => {
+app.post('/api/generate-cover-letter', requireAuth, upload.single('resume'), asyncHandler(async (req, res) => {
   if (!req.file) {
-    return res.status(400).json({ error: "No file uploaded" });
+    return res.status(400).json({ error: 'No file uploaded' });
   }
 
-  const { jobDescription } = req.body;
-  
-  if (!jobDescription || jobDescription.trim().length < 50) {
-    return res.status(400).json({ error: "Job description is too short" });
-  }
-
-  console.log(`[COVER LETTER] Resume size: ${req.file.size}, JD length: ${jobDescription.length}`);
-
+  const jobDescription = validateText(req.body.jobDescription, 'Job description', { min: 50, max: 50000 });
   const resumeText = await extractPdfText(req.file.buffer);
 
   const aiResponse = await callAIService('/generate-cover-letter', {
     resume_text: resumeText,
-    job_description: jobDescription
+    job_description: jobDescription,
   });
 
   res.json(aiResponse);
 }));
 
-// 5. Chat Endpoint
-app.post('/api/chat', asyncHandler(async (req, res) => {
-  const { messages, userId } = req.body;
+app.post('/api/chat', requireAuth, asyncHandler(async (req, res) => {
+  const { messages } = req.body;
 
-  if (!messages || !Array.isArray(messages) || messages.length === 0) {
-    return res.status(400).json({ error: "No messages provided" });
+  if (!Array.isArray(messages) || messages.length === 0 || messages.length > 30) {
+    return res.status(400).json({ error: 'A valid messages array is required' });
   }
 
-  console.log(`[CHAT] Messages: ${messages.length}, User: ${userId}`);
+  const sanitizedMessages = messages.map((message) => ({
+    role: message.role === 'assistant' ? 'assistant' : 'user',
+    content: validateText(message.content, 'Message content', { min: 1, max: 5000 }),
+  }));
 
   const aiResponse = await callAIService('/chat', {
-    messages: messages,
-    userId: userId
+    messages: sanitizedMessages,
+    userId: req.user.uid,
   });
 
   res.json(aiResponse);
 }));
 
-// ============================================
-// FIRESTORE ENDPOINTS
-// ============================================
+app.post('/api/jobs', requireAuth, asyncHandler(async (req, res) => {
+  requireFirestore();
 
-// 6. Create Job Entry
-app.post('/api/jobs', asyncHandler(async (req, res) => {
-  const { company, role, status, notes, date, matchScore, userId } = req.body;
-
-  if (!userId) {
-    return res.status(400).json({ error: "userId is required" });
+  if (req.body.userId && req.body.userId !== req.user.uid) {
+    return res.status(403).json({ error: 'Cannot create data for another user' });
   }
 
   const jobData = {
-    company,
-    role,
-    status: status || 'applied',
-    notes: notes || '',
-    date: date || new Date().toISOString().split('T')[0],
-    matchScore: matchScore || 0,
-    userId,
+    company: validateText(req.body.company, 'Company', { min: 1, max: 200 }),
+    role: validateText(req.body.role, 'Role', { min: 1, max: 200 }),
+    status: req.body.status || 'applied',
+    notes: typeof req.body.notes === 'string' ? req.body.notes.slice(0, 5000) : '',
+    date: req.body.date || new Date().toISOString().split('T')[0],
+    matchScore: normalizeMatchScore(req.body.matchScore),
+    userId: req.user.uid,
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   };
 
   const docRef = await db.collection('jobs').add(jobData);
-  console.log(`[JOBS] Created job: ${docRef.id} for user: ${userId}`);
-
   res.json({ id: docRef.id, ...jobData });
 }));
 
-// 7. Get User Jobs
-app.get('/api/jobs/:userId', asyncHandler(async (req, res) => {
-  const { userId } = req.params;
+app.get('/api/jobs/:userId', requireAuth, asyncHandler(async (req, res) => {
+  requireFirestore();
 
-  if (!userId) {
-    return res.status(400).json({ error: "userId is required" });
+  if (req.params.userId !== req.user.uid) {
+    return res.status(403).json({ error: 'Cannot access another user data' });
   }
 
-  console.log(`[JOBS] Fetching jobs for user: ${userId}`);
-
   const snapshot = await db.collection('jobs')
-    .where('userId', '==', userId)
-    .orderBy('createdAt', 'desc')
+    .where('userId', '==', req.user.uid)
     .get();
 
-  const jobs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  const jobs = sortByCreatedAtDesc(snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
   res.json(jobs);
 }));
 
-// 8. Update Job Entry
-app.put('/api/jobs/:jobId', asyncHandler(async (req, res) => {
-  const { jobId } = req.params;
+app.put('/api/jobs/:jobId', requireAuth, asyncHandler(async (req, res) => {
+  requireFirestore();
+
+  const jobRef = db.collection('jobs').doc(req.params.jobId);
+  const existingDoc = await jobRef.get();
+
+  if (!existingDoc.exists) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  const existingJob = existingDoc.data();
+  if (existingJob.userId !== req.user.uid) {
+    return res.status(403).json({ error: 'Cannot update another user data' });
+  }
+
   const updateData = {
-    ...req.body,
-    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    company: req.body.company ? validateText(req.body.company, 'Company', { min: 1, max: 200 }) : existingJob.company,
+    role: req.body.role ? validateText(req.body.role, 'Role', { min: 1, max: 200 }) : existingJob.role,
+    status: req.body.status || existingJob.status,
+    notes: typeof req.body.notes === 'string' ? req.body.notes.slice(0, 5000) : existingJob.notes,
+    date: req.body.date || existingJob.date,
+    matchScore: normalizeMatchScore(req.body.matchScore),
+    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
   };
 
-  const jobRef = db.collection('jobs').doc(jobId);
   await jobRef.update(updateData);
-
-  console.log(`[JOBS] Updated job: ${jobId}`);
-
   const updatedDoc = await jobRef.get();
-  res.json({ id: jobId, ...updatedDoc.data() });
+  res.json({ id: req.params.jobId, ...updatedDoc.data() });
 }));
 
-// 9. Delete Job Entry
-app.delete('/api/jobs/:jobId', asyncHandler(async (req, res) => {
-  const { jobId } = req.params;
+app.delete('/api/jobs/:jobId', requireAuth, asyncHandler(async (req, res) => {
+  requireFirestore();
 
-  await db.collection('jobs').doc(jobId).delete();
-  console.log(`[JOBS] Deleted job: ${jobId}`);
+  const jobRef = db.collection('jobs').doc(req.params.jobId);
+  const existingDoc = await jobRef.get();
 
-  res.json({ success: true, id: jobId });
+  if (!existingDoc.exists) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  if (existingDoc.data().userId !== req.user.uid) {
+    return res.status(403).json({ error: 'Cannot delete another user data' });
+  }
+
+  await jobRef.delete();
+  res.json({ success: true, id: req.params.jobId });
 }));
 
-// 10. Save AI Results
-app.post('/api/ai-results', asyncHandler(async (req, res) => {
-  const { userId, type, content, relatedJobId } = req.body;
+app.post('/api/ai-results', requireAuth, asyncHandler(async (req, res) => {
+  requireFirestore();
 
-  if (!userId || !type) {
-    return res.status(400).json({ error: "userId and type are required" });
+  if (!req.body.type) {
+    return res.status(400).json({ error: 'type is required' });
   }
 
   const resultData = {
-    userId,
-    type, // 'resume_analysis', 'cover_letter', 'match_score', etc.
-    content,
-    relatedJobId: relatedJobId || null,
-    createdAt: admin.firestore.FieldValue.serverTimestamp()
+    userId: req.user.uid,
+    type: String(req.body.type).slice(0, 80),
+    content: req.body.content || '',
+    relatedJobId: req.body.relatedJobId || null,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
   };
 
   const docRef = await db.collection('ai_results').add(resultData);
-  console.log(`[AI_RESULTS] Saved ${type} for user: ${userId}`);
-
   res.json({ id: docRef.id, ...resultData });
 }));
 
-// 11. Get AI Results for User
-app.get('/api/ai-results/:userId', asyncHandler(async (req, res) => {
-  const { userId } = req.params;
-  const { type } = req.query;
+app.get('/api/ai-results/:userId', requireAuth, asyncHandler(async (req, res) => {
+  requireFirestore();
 
-  if (!userId) {
-    return res.status(400).json({ error: "userId is required" });
+  if (req.params.userId !== req.user.uid) {
+    return res.status(403).json({ error: 'Cannot access another user data' });
   }
 
-  console.log(`[AI_RESULTS] Fetching results for user: ${userId}, type: ${type}`);
-
-  let query = db.collection('ai_results').where('userId', '==', userId);
-  
-  if (type) {
-    query = query.where('type', '==', type);
+  let query = db.collection('ai_results').where('userId', '==', req.user.uid);
+  if (req.query.type) {
+    query = query.where('type', '==', String(req.query.type).slice(0, 80));
   }
 
-  const snapshot = await query.orderBy('createdAt', 'desc').get();
-  const results = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-
+  const snapshot = await query.get();
+  const results = sortByCreatedAtDesc(snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
   res.json(results);
 }));
 
-// 12. Health Check
 app.get('/api/health', asyncHandler(async (req, res) => {
   try {
-    // Check AI service
     await axios.get(`${AI_SERVICE_URL}/health`, { timeout: 5000 });
-    
-    res.json({ 
+    res.json({
       status: 'ok',
       service: 'Node.js AI Resume Analyzer',
-      ai_service: 'connected'
+      ai_service: 'connected',
+      firebase: db ? 'configured' : 'missing',
     });
   } catch (e) {
-    res.json({ 
+    res.json({
       status: 'ok',
       service: 'Node.js AI Resume Analyzer',
       ai_service: 'disconnected',
-      error: e.message
+      firebase: db ? 'configured' : 'missing',
+      error: e.message,
     });
   }
 }));
 
-// ============================================
-// LOGGING & SERVER START
-// ============================================
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`\n${'='.repeat(50)}`);
-  console.log(`✅ Node.js Server running on port ${PORT}`);
-  console.log(`📡 AI Service URL: ${AI_SERVICE_URL}`);
-  console.log(`🔥 Firebase initialized`);
-  console.log(`${'='.repeat(50)}\n`);
+app.use((err, req, res, next) => {
+  console.error('[ERROR]', err.message);
+  res.status(err.status || 500).json({
+    error: err.message || 'Internal Server Error',
+    details: process.env.NODE_ENV === 'development' ? err.stack : undefined,
+  });
 });
+
+if (require.main === module) {
+  const PORT = process.env.PORT || 5000;
+  app.listen(PORT, () => {
+    console.log(`Node.js Server running on port ${PORT}`);
+    console.log(`AI Service URL: ${AI_SERVICE_URL}`);
+    console.log(`Firebase: ${db ? 'configured' : 'missing'}`);
+  });
+}
+
+module.exports = app;

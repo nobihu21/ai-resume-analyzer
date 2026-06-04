@@ -47,3 +47,30 @@ npm run dev
 
 ## 📱 PWA Support
 This app is ready to be configured as a PWA using `vite-plugin-pwa` for offline support and installation.
+
+## Production Deployment on Vercel
+
+This repository is configured as a Vercel monorepo:
+
+- Frontend: Vite build from `frontend/`
+- Node API: Express serverless function from `backend-node/server.js`
+- AI service: FastAPI service expected at `AI_SERVICE_URL`
+
+Set these Vercel environment variables before deploying:
+
+```bash
+VITE_FIREBASE_API_KEY=...
+VITE_FIREBASE_AUTH_DOMAIN=...
+VITE_FIREBASE_PROJECT_ID=...
+VITE_FIREBASE_STORAGE_BUCKET=...
+VITE_FIREBASE_MESSAGING_SENDER_ID=...
+VITE_FIREBASE_APP_ID=...
+VITE_FIREBASE_MEASUREMENT_ID=...
+
+AI_SERVICE_URL=https://your-ai-service.example.com
+CORS_ORIGINS=https://your-vercel-app.vercel.app,https://your-custom-domain.com
+FIREBASE_SERVICE_ACCOUNT_JSON='{"type":"service_account", "...": "..."}'
+RATE_LIMIT_PER_MINUTE=60
+```
+
+If the FastAPI AI service is not deployed separately, AI endpoints will fail while the frontend and Firestore-backed features can still deploy.

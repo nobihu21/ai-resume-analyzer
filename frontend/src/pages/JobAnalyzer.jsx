@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Row, Col, Form, Button, Card, Badge, Alert } from 'react-bootstrap';
 import { Search, ListChecks, Target, Loader } from 'lucide-react';
-import axios from 'axios';
+import api from '../api';
 
 const JobAnalyzer = () => {
     const [jd, setJd] = useState('');
@@ -27,7 +27,7 @@ const JobAnalyzer = () => {
 
         try {
             console.log('[JOB ANALYZER] Analyzing job description...');
-            const res = await axios.post('http://localhost:5000/api/analyze-job', 
+            const res = await api.post('/api/analyze-job', 
                 { jobDescription: jd },
                 { timeout: 60000 }
             );
@@ -176,4 +176,3 @@ const JobAnalyzer = () => {
 };
 
 export default JobAnalyzer;
-

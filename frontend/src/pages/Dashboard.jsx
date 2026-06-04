@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Row, Col, Card, ProgressBar } from 'react-bootstrap';
 import { Zap, FileText, CheckCircle, TrendingUp, AlertCircle, Target, Award } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { useFirestore } from '../hooks/useFirestore';
+import api from '../api';
 
 const Dashboard = () => {
   const { user, userProfile } = useAuth();
@@ -12,9 +12,35 @@ const Dashboard = () => {
     applicationsSent: 0,
     interviews: 0
   });
+  const [jobs, setJobs] = useState([]);
 
-  // Fetch user's jobs
-  const { data: jobs } = useFirestore('jobs', user ? [{ field: 'userId', operator: '==', value: user.uid }] : null);
+  useEffect(() => {
+    let isMounted = true;
+
+    const fetchJobs = async () => {
+      if (!user?.uid) {
+        setJobs([]);
+        return;
+      }
+
+      try {
+        const res = await api.get(`/api/jobs/${user.uid}`);
+        if (isMounted) {
+          setJobs(res.data || []);
+        }
+      } catch (err) {
+        console.error('[Dashboard] Failed to load jobs:', err.response?.data?.error || err.message);
+        if (isMounted) {
+          setJobs([]);
+        }
+      }
+    };
+
+    fetchJobs();
+    return () => {
+      isMounted = false;
+    };
+  }, [user]);
 
   // Calculate statistics
   useEffect(() => {

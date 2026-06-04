@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Form, Button, Card } from 'react-bootstrap';
 import { Send, MessageCircle, Loader } from 'lucide-react';
-import axios from 'axios';
+import api from '../api';
 import { useAuth } from '../context/AuthContext';
 
 const Chatbot = () => {
@@ -44,7 +44,7 @@ const Chatbot = () => {
 
     try {
       // Call the AI service
-      const response = await axios.post('http://localhost:5000/api/chat', {
+      const response = await api.post('/api/chat', {
         messages: [
           ...messages.map(m => ({
             role: m.sender === 'user' ? 'user' : 'assistant',

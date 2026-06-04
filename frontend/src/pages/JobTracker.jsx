@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Table, Badge, Button, Modal, Form, Card, Alert } from 'react-bootstrap';
 import { Plus, Trash2, Calendar, Building2, Briefcase, Edit2 } from 'lucide-react';
-import axios from 'axios';
+import api from '../api';
 import { useAuth } from '../context/AuthContext';
 
 const JobTracker = () => {
@@ -30,7 +30,7 @@ const JobTracker = () => {
     const fetchJobs = async () => {
         try {
             setLoading(true);
-            const res = await axios.get(`http://localhost:5000/api/jobs/${user.uid}`);
+            const res = await api.get(`/api/jobs/${user.uid}`);
             setJobs(res.data || []);
         } catch (err) {
             console.error('Fetch jobs error:', err);
@@ -50,11 +50,11 @@ const JobTracker = () => {
             setLoading(true);
             if (editingId) {
                 // Update
-                await axios.put(`http://localhost:5000/api/jobs/${editingId}`, newJob);
+                await api.put(`/api/jobs/${editingId}`, newJob);
                 setSuccess('Job updated successfully');
             } else {
                 // Create
-                await axios.post('http://localhost:5000/api/jobs', {
+                await api.post('/api/jobs', {
                     ...newJob,
                     userId: user.uid
                 });
@@ -76,7 +76,7 @@ const JobTracker = () => {
         if (window.confirm('Are you sure you want to delete this application?')) {
             try {
                 setLoading(true);
-                await axios.delete(`http://localhost:5000/api/jobs/${jobId}`);
+                await api.delete(`/api/jobs/${jobId}`);
                 setSuccess('Job deleted successfully');
                 fetchJobs();
             } catch (err) {
@@ -314,5 +314,4 @@ const JobTracker = () => {
 };
 
 export default JobTracker;
-
 

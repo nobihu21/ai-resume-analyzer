@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Row, Col, Form, Button, Card, ProgressBar, Alert } from 'react-bootstrap';
 import { Zap, CheckCircle, XCircle, AlertCircle, Loader } from 'lucide-react';
-import axios from 'axios';
+import api from '../api';
 import { useAuth } from '../context/AuthContext';
 
 const MatchScore = () => {
@@ -44,7 +44,7 @@ const MatchScore = () => {
             formData.append('jobDescription', jd);
 
             console.log('[MATCH SCORE] Calculating match...');
-            const res = await axios.post('http://localhost:5000/api/match-score', formData, {
+            const res = await api.post('/api/match-score', formData, {
                 headers: { 'Content-Type': 'multipart/form-data' },
                 timeout: 60000
             });

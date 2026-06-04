@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { db } from '../firebase';
-import { collection, query, where, getDocs, orderBy, doc, getDoc, setDoc, updateDoc, deleteDoc, QueryConstraint } from 'firebase/firestore';
+import { collection, query, where, getDocs, orderBy, doc, getDoc, setDoc, updateDoc, deleteDoc } from 'firebase/firestore';
 
 export const useFirestore = (collectionName, conditions = null) => {
   const [data, setData] = useState([]);

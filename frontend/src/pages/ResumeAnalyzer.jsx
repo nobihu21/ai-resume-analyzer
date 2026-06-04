@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Row, Col, Form, Button, Card, ProgressBar, Badge } from 'react-bootstrap';
 import { Upload, CheckCircle2, AlertCircle } from 'lucide-react';
-import axios from 'axios';
+import api from '../api';
 
 const ResumeAnalyzer = () => {
   const [file, setFile] = useState(null);
@@ -15,7 +15,7 @@ const ResumeAnalyzer = () => {
     formData.append('resume', file);
 
     try {
-      const res = await axios.post('http://localhost:5000/api/analyze-resume', formData);
+      const res = await api.post('/api/analyze-resume', formData);
       setResults(res.data);
     } catch (err) {
       console.error(err);

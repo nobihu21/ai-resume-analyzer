@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from openai import OpenAI
 import os
 import json
@@ -26,20 +26,26 @@ else:
 # ============================================
 client = OpenAI(
     api_key=api_key,
-    base_url="https://openrouter.ai/api/v1"
+    base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+    timeout=float(os.getenv("OPENROUTER_TIMEOUT_SECONDS", "30"))
 )
 
-# Model to use via OpenRouter (free & stable)
-MODEL = "openai/gpt-3.5-turbo"
+# Model to use via OpenRouter
+MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-3.5-turbo")
 
 # ============================================
 # 4. FastAPI App Setup
 # ============================================
 app = FastAPI(title="AI Job Assistant - AI Service")
+allowed_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174").split(",")
+    if origin.strip()
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -49,25 +55,25 @@ app.add_middleware(
 # 5. Request Models
 # ============================================
 class ResumeAnalysisRequest(BaseModel):
-    resume_text: str
+    resume_text: str = Field(..., min_length=50, max_length=120000)
 
 class JobAnalysisRequest(BaseModel):
-    job_description: str
+    job_description: str = Field(..., min_length=50, max_length=50000)
 
 class MatchRequest(BaseModel):
-    resume_text: str
-    job_description: str
+    resume_text: str = Field(..., min_length=50, max_length=120000)
+    job_description: str = Field(..., min_length=50, max_length=50000)
 
 class CoverLetterRequest(BaseModel):
-    resume_text: str
-    job_description: str
+    resume_text: str = Field(..., min_length=50, max_length=120000)
+    job_description: str = Field(..., min_length=50, max_length=50000)
 
 class ChatMessage(BaseModel):
-    role: str
-    content: str
+    role: str = Field(..., pattern="^(user|assistant)$")
+    content: str = Field(..., min_length=1, max_length=5000)
 
 class ChatRequest(BaseModel):
-    messages: List[ChatMessage]
+    messages: List[ChatMessage] = Field(..., min_length=1, max_length=30)
     userId: str = None
 
 # ============================================
@@ -119,7 +125,7 @@ def call_openrouter(prompt: str, endpoint_name: str, system_message: str = None)
         return {"error": f"Invalid JSON response: {str(e)}"}
     except Exception as e:
         print(f"OpenRouter Error: {str(e)}")
-        return {"error": f"API Error: {str(e)}"}
+        return {"error": "AI provider request failed"}
 
 def call_openrouter_text(prompt: str, endpoint_name: str, system_message: str = None) -> str:
     """Call OpenRouter and return plain text response (not JSON)"""
@@ -148,7 +154,7 @@ def call_openrouter_text(prompt: str, endpoint_name: str, system_message: str = 
         return response.choices[0].message.content
     except Exception as e:
         print(f"OpenRouter Error: {str(e)}")
-        return f"I apologize, but I encountered an error: {str(e)}"
+        return "I apologize, but I encountered an error while generating a response. Please try again."
 
 # ============================================
 # 6. Endpoints

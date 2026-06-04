@@ -23,21 +23,23 @@ const Auth = () => {
       setError('');
       const result = await signInWithPopup(auth, googleProvider);
       
-      // Check if user exists in Firestore
-      const userRef = doc(db, 'users', result.user.uid);
-      const userSnap = await getDoc(userRef);
-      
-      if (!userSnap.exists()) {
-        // Create new user profile
-        await setDoc(userRef, {
-          uid: result.user.uid,
-          email: result.user.email,
-          displayName: result.user.displayName || 'User',
-          photoURL: result.user.photoURL || '',
-          createdAt: new Date(),
-          resumeScore: 0,
-          jobsApplied: 0
-        });
+      try {
+        const userRef = doc(db, 'users', result.user.uid);
+        const userSnap = await getDoc(userRef);
+        
+        if (!userSnap.exists()) {
+          await setDoc(userRef, {
+            uid: result.user.uid,
+            email: result.user.email,
+            displayName: result.user.displayName || 'User',
+            photoURL: result.user.photoURL || '',
+            createdAt: new Date(),
+            resumeScore: 0,
+            jobsApplied: 0
+          });
+        }
+      } catch (profileError) {
+        console.warn('[Auth] Profile write skipped:', profileError.message);
       }
       
       navigate('/dashboard');
@@ -64,16 +66,19 @@ const Auth = () => {
 
         const result = await createUserWithEmailAndPassword(auth, email, password);
         
-        // Create user profile in Firestore
-        await setDoc(doc(db, 'users', result.user.uid), {
-          uid: result.user.uid,
-          email: result.user.email,
-          displayName: fullName || 'User',
-          photoURL: '',
-          createdAt: new Date(),
-          resumeScore: 0,
-          jobsApplied: 0
-        });
+        try {
+          await setDoc(doc(db, 'users', result.user.uid), {
+            uid: result.user.uid,
+            email: result.user.email,
+            displayName: fullName || 'User',
+            photoURL: '',
+            createdAt: new Date(),
+            resumeScore: 0,
+            jobsApplied: 0
+          });
+        } catch (profileError) {
+          console.warn('[Auth] Profile write skipped:', profileError.message);
+        }
 
         navigate('/dashboard');
       } else {

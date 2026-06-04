@@ -1,13 +1,11 @@
 import React, { useState } from 'react';
 import { Row, Col, Form, Button, Card, Alert } from 'react-bootstrap';
 import { FileEdit, Copy, Download, Loader } from 'lucide-react';
-import axios from 'axios';
+import api from '../api';
 import { useAuth } from '../context/AuthContext';
-import { useFirestoreMutations } from '../hooks/useFirestore';
 
 const CoverLetter = () => {
     const { user } = useAuth();
-    const { addDocument } = useFirestoreMutations();
     
     const [file, setFile] = useState(null);
     const [jd, setJd] = useState('');
@@ -49,7 +47,7 @@ const CoverLetter = () => {
             formData.append('jobDescription', jd);
 
             console.log('[COVER LETTER] Generating cover letter...');
-            const res = await axios.post('http://localhost:5000/api/generate-cover-letter', formData, {
+            const res = await api.post('/api/generate-cover-letter', formData, {
                 headers: { 'Content-Type': 'multipart/form-data' },
                 timeout: 60000
             });
@@ -63,8 +61,7 @@ const CoverLetter = () => {
                 // Save to Firestore
                 if (user?.uid) {
                     try {
-                        await addDocument('ai_results', {
-                            userId: user.uid,
+                        await api.post('/api/ai-results', {
                             type: 'cover_letter',
                             content: res.data.cover_letter,
                             fileName: fileName
