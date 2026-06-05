@@ -17,7 +17,6 @@ __pycache__/
 # Environment and secrets
 .env
 *.env
-backend-node/*.json
 *-firebase-adminsdk-*.json
 
 # Logs
