@@ -1,5 +1,12 @@
 {
   "dependencies": {
     "firebase-admin": "^13.8.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.98.0"
+  },
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "preview": "wrangler dev"
   }
 }
