@@ -118,7 +118,7 @@ async function extractPdfText(buffer) {
 }
 
 async function callAIService(endpoint, data) {
-  if (!AI_SERVICE_URL && OPENROUTER_API_KEY) {
+  if (OPENROUTER_API_KEY) {
     return callOpenRouterDirect(endpoint, data);
   }
 
@@ -557,7 +557,7 @@ app.get('/api/ai-results/:userId', requireAuth, asyncHandler(async (req, res) =>
 }));
 
 app.get('/api/health', asyncHandler(async (req, res) => {
-  if (!AI_SERVICE_URL && OPENROUTER_API_KEY) {
+  if (OPENROUTER_API_KEY) {
     return res.json({
       status: 'ok',
       service: 'Node.js AI Resume Analyzer',
