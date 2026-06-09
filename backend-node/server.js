@@ -9,7 +9,10 @@ const path = require('path');
 require('dotenv').config();
 
 const app = express();
-const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://127.0.0.1:8000';
+const AI_SERVICE_URL = process.env.AI_SERVICE_URL || '';
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
+const OPENROUTER_BASE_URL = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openai/gpt-3.5-turbo';
 const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174')
   .split(',')
   .map((origin) => origin.trim())
@@ -115,6 +118,14 @@ async function extractPdfText(buffer) {
 }
 
 async function callAIService(endpoint, data) {
+  if (!AI_SERVICE_URL && OPENROUTER_API_KEY) {
+    return callOpenRouterDirect(endpoint, data);
+  }
+
+  if (!AI_SERVICE_URL) {
+    throw new Error('AI service is not configured');
+  }
+
   try {
     const response = await axios.post(`${AI_SERVICE_URL}${endpoint}`, data, {
       timeout: Number(process.env.AI_SERVICE_TIMEOUT_MS || 30000),
@@ -125,6 +136,157 @@ async function callAIService(endpoint, data) {
     console.error(`[AI SERVICE ERROR] ${endpoint}:`, errorMsg);
     throw new Error(`AI Service Error: ${errorMsg}`);
   }
+}
+
+function stripJsonFence(value) {
+  const content = String(value || '').trim();
+  if (!content.startsWith('```')) {
+    return content;
+  }
+  return content
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('```'))
+    .join('\n')
+    .trim();
+}
+
+async function callOpenRouter(messages, { json = false, maxTokens = 2000 } = {}) {
+  const response = await axios.post(`${OPENROUTER_BASE_URL}/chat/completions`, {
+    model: OPENROUTER_MODEL,
+    messages,
+    max_tokens: maxTokens,
+    temperature: 0.7,
+  }, {
+    timeout: Number(process.env.AI_SERVICE_TIMEOUT_MS || 30000),
+    headers: {
+      Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': process.env.PUBLIC_APP_URL || 'https://ai-resume-analyzer-six-topaz.vercel.app',
+      'X-Title': 'AI Resume Analyzer',
+    },
+  });
+
+  const content = response.data?.choices?.[0]?.message?.content || '';
+  if (!json) {
+    return content;
+  }
+
+  try {
+    return JSON.parse(stripJsonFence(content));
+  } catch (error) {
+    throw new Error(`Invalid JSON response from AI: ${error.message}`);
+  }
+}
+
+async function callOpenRouterDirect(endpoint, data) {
+  const jsonSystem = 'You are a helpful assistant. You MUST respond with valid JSON only. No markdown, no explanation, no extra text.';
+
+  if (endpoint === '/analyze-resume') {
+    const prompt = `You are an expert ATS (Applicant Tracking System) specialist. Analyze this resume comprehensively.
+
+RESUME:
+${data.resume_text}
+
+Analyze and return ONLY valid JSON with these fields:
+- score: number 0-100 (0=poor, 100=perfect for ATS)
+- missing_keywords: array of important industry keywords not found (max 8)
+- suggestions: array of 3-4 specific, actionable improvement suggestions
+
+JSON FORMAT ONLY:
+{"score":75,"missing_keywords":["Kubernetes","AWS"],"suggestions":["Add metrics to achievements","Use standard section headers"]}`;
+
+    return callOpenRouter([
+      { role: 'system', content: jsonSystem },
+      { role: 'user', content: prompt },
+    ], { json: true });
+  }
+
+  if (endpoint === '/analyze-job') {
+    const prompt = `You are an expert recruiter and job analyst. Extract and analyze this job posting.
+
+JOB DESCRIPTION:
+${data.job_description}
+
+Extract and return ONLY valid JSON with:
+- skills: array of top 6-8 technical/soft skills required
+- requirements: array of 4-5 key requirements
+- keywords: array of important industry/role keywords for ATS (max 8)
+
+JSON FORMAT ONLY:
+{"skills":["Python","AWS","Leadership"],"requirements":["5+ years experience","BS in CS"],"keywords":["Cloud Engineer","DevOps"]}`;
+
+    return callOpenRouter([
+      { role: 'system', content: jsonSystem },
+      { role: 'user', content: prompt },
+    ], { json: true });
+  }
+
+  if (endpoint === '/match-score') {
+    const prompt = `You are an expert career counselor. Compare this resume against the job description.
+
+RESUME:
+${data.resume_text}
+
+JOB DESCRIPTION:
+${data.job_description}
+
+Analyze fit and return ONLY valid JSON:
+- match_percentage: number 0-100
+- missing_skills: array of 3-5 skills they should develop
+- explanation: 2-3 sentences explaining the match
+
+JSON FORMAT ONLY:
+{"match_percentage":82,"missing_skills":["Kubernetes","Go Programming"],"explanation":"Strong backend skills but lacks cloud orchestration experience."}`;
+
+    return callOpenRouter([
+      { role: 'system', content: jsonSystem },
+      { role: 'user', content: prompt },
+    ], { json: true });
+  }
+
+  if (endpoint === '/generate-cover-letter') {
+    const prompt = `You are a professional career coach writing cover letters. Create a compelling, personalized cover letter.
+
+CANDIDATE'S RESUME:
+${data.resume_text}
+
+TARGET JOB DESCRIPTION:
+${data.job_description}
+
+Write a professional cover letter with:
+1. Strong opening paragraph expressing genuine interest
+2. Middle paragraph highlighting specific skills/achievements that match the job
+3. Closing paragraph with strong call to action
+
+Requirements:
+- Total length: 150-250 words
+- Professional, enthusiastic tone
+- Personalized
+- Start with "Dear Hiring Manager,"
+- End with professional closing
+
+Return ONLY the complete cover letter text.`;
+
+    const coverLetter = await callOpenRouter([
+      { role: 'system', content: 'You are a helpful career assistant providing professional cover letters.' },
+      { role: 'user', content: prompt },
+    ], { maxTokens: 1500 });
+    return { cover_letter: coverLetter };
+  }
+
+  if (endpoint === '/chat') {
+    const messages = [
+      {
+        role: 'system',
+        content: 'You are an expert AI career assistant helping with resumes, interviews, career growth, job search, salary negotiation, and industry insights. Provide concise, actionable, professional advice.',
+      },
+      ...data.messages,
+    ];
+    const response = await callOpenRouter(messages, { maxTokens: 1000 });
+    return { response };
+  }
+
+  throw new Error(`Unsupported AI endpoint: ${endpoint}`);
 }
 
 function requireFirestore() {
@@ -395,6 +557,16 @@ app.get('/api/ai-results/:userId', requireAuth, asyncHandler(async (req, res) =>
 }));
 
 app.get('/api/health', asyncHandler(async (req, res) => {
+  if (!AI_SERVICE_URL && OPENROUTER_API_KEY) {
+    return res.json({
+      status: 'ok',
+      service: 'Node.js AI Resume Analyzer',
+      ai_service: 'connected',
+      ai_provider: 'openrouter',
+      firebase: db ? 'configured' : 'missing',
+    });
+  }
+
   try {
     await axios.get(`${AI_SERVICE_URL}/health`, { timeout: 5000 });
     res.json({
