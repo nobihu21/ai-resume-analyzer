@@ -9,10 +9,10 @@ const path = require('path');
 require('dotenv').config();
 
 const app = express();
-const AI_SERVICE_URL = process.env.AI_SERVICE_URL || '';
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '';
-const OPENROUTER_BASE_URL = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
-const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || 'openai/gpt-3.5-turbo';
+const AI_SERVICE_URL = (process.env.AI_SERVICE_URL || '').trim();
+const OPENROUTER_API_KEY = (process.env.OPENROUTER_API_KEY || '').trim();
+const OPENROUTER_BASE_URL = (process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').trim().replace(/\/$/, '');
+const OPENROUTER_MODEL = (process.env.OPENROUTER_MODEL || 'openai/gpt-3.5-turbo').trim();
 const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174')
   .split(',')
   .map((origin) => origin.trim())
