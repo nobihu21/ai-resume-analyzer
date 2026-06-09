@@ -169,30 +169,32 @@ function stripJsonFence(value) {
 }
 
 async function callOpenRouter(messages, { json = false, maxTokens = 2000 } = {}) {
-  const response = await axios.post(`${OPENROUTER_BASE_URL}/chat/completions`, {
-    model: OPENROUTER_MODEL,
-    messages,
-    max_tokens: maxTokens,
-    temperature: 0.7,
-  }, {
-    timeout: Number(process.env.AI_SERVICE_TIMEOUT_MS || 30000),
-    headers: {
-      Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': process.env.PUBLIC_APP_URL || 'https://ai-resume-analyzer-six-topaz.vercel.app',
-      'X-Title': 'AI Resume Analyzer',
-    },
-  });
-
-  const content = response.data?.choices?.[0]?.message?.content || '';
-  if (!json) {
-    return content;
-  }
-
   try {
+    const response = await axios.post(`${OPENROUTER_BASE_URL}/chat/completions`, {
+      model: OPENROUTER_MODEL,
+      messages,
+      max_tokens: maxTokens,
+      temperature: 0.7,
+    }, {
+      timeout: Number(process.env.AI_SERVICE_TIMEOUT_MS || 30000),
+      headers: {
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': process.env.PUBLIC_APP_URL || 'https://ai-resume-analyzer-six-topaz.vercel.app',
+        'X-Title': 'AI Resume Analyzer',
+      },
+    });
+
+    const content = response.data?.choices?.[0]?.message?.content || '';
+    if (!json) {
+      return content;
+    }
+
     return JSON.parse(stripJsonFence(content));
   } catch (error) {
-    throw new Error(`Invalid JSON response from AI: ${error.message}`);
+    const detail = error.response?.data?.error?.message || error.response?.data?.error || error.response?.data?.message || error.message;
+    console.error('[OPENROUTER ERROR]', detail);
+    throw new Error(`AI provider request failed: ${detail}`);
   }
 }
 
@@ -293,12 +295,28 @@ Return ONLY the complete cover letter text.`;
   }
 
   if (endpoint === '/chat') {
+    const chatMessages = Array.isArray(data.messages)
+      ? data.messages
+        .filter((message) => ['user', 'assistant'].includes(message.role) && String(message.content || '').trim())
+        .map((message) => ({
+          role: message.role,
+          content: String(message.content).trim(),
+        }))
+      : [];
+
+    const firstUserIndex = chatMessages.findIndex((message) => message.role === 'user');
+    const safeMessages = firstUserIndex >= 0 ? chatMessages.slice(firstUserIndex) : [];
+
+    if (safeMessages.length === 0) {
+      throw new Error('Chat message is required');
+    }
+
     const messages = [
       {
         role: 'system',
         content: 'You are an expert AI career assistant helping with resumes, interviews, career growth, job search, salary negotiation, and industry insights. Provide concise, actionable, professional advice.',
       },
-      ...data.messages,
+      ...safeMessages,
     ];
     const response = await callOpenRouter(messages, { maxTokens: 1000 });
     return { response };

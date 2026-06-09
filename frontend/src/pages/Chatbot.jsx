@@ -44,12 +44,16 @@ const Chatbot = () => {
 
     try {
       // Call the AI service
+      const chatHistory = messages
+        .filter(m => m.sender === 'user')
+        .map(m => ({
+          role: 'user',
+          content: m.text
+        }));
+
       const response = await api.post('/api/chat', {
         messages: [
-          ...messages.map(m => ({
-            role: m.sender === 'user' ? 'user' : 'assistant',
-            content: m.text
-          })),
+          ...chatHistory,
           {
             role: 'user',
             content: input
