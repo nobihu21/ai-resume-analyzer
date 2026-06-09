@@ -1,5 +1,13 @@
 {
-  "dependencies": {
-    "firebase-admin": "^13.8.0"
+  "name": "ai-resume-analyzer",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "frontend",
+    "backend-node"
+  ],
+  "scripts": {
+    "build": "npm --workspace frontend run build",
+    "start": "npm --workspace backend-node start"
   }
 }
